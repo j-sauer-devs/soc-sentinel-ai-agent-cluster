@@ -20,34 +20,27 @@ load_dotenv()
 
 
 def extract_reasoning(content: str) -> tuple[str, str]:
-    """Extract reasoning and final answer from K2 Think response.
-
-    Returns:
-        (reasoning, final_answer) — reasoning is the text inside <think>...</think>,
-        final_answer is everything outside those tags.
-
-    Note: K2 Think responses may have incomplete opening tags due to streaming.
-    This parser handles both complete <think>...</think> and cases with only </think>.
     """
-    # Try to match complete <think>...</think> block first
-    think_match = re.search(r"<think>(.*?)</think>", content, re.DOTALL)
-
+    Handles two formats K2 Think uses:
+    - Standard:  <think>...</think>
+    - Observed:  ...reasoning...</think>  (no opening tag)
+    """
+    # Try standard format first
+    think_match = re.search(r'<think>(.*?)</think>', content, re.DOTALL)
     if think_match:
-        # Complete tag found
         reasoning = think_match.group(1).strip()
-        answer = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
-    else:
-        # No complete tag; look for </think> and extract everything before it
-        close_idx = content.find("</think>")
-        if close_idx != -1:
-            reasoning = content[:close_idx].strip()
-            answer = content[close_idx + 8:].strip()  # 8 = len("</think>")
-        else:
-            # No reasoning tags at all
-            reasoning = ""
-            answer = content
+        answer = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
+        return reasoning, answer
 
-    return reasoning, answer
+    # Fallback: split on closing tag only
+    if '</think>' in content:
+        parts = content.split('</think>', 1)
+        reasoning = parts[0].strip()
+        answer = parts[1].strip()
+        return reasoning, answer
+
+    # No reasoning tags at all
+    return "", content.strip()
 
 
 # ---------------------------------------------------------------------------
