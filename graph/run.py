@@ -1,14 +1,11 @@
 """
 SOC Sentinel — test runner
 
-Loads a batch of 3 mock alerts with pre-populated triage and enrichment
-results to test the Oversight Officer's cross-verification logic.
+Loads a batch of 3 mock alerts and runs the full agent graph with
+live API integrations (AbuseIPDB, OTX, VirusTotal, GreyNoise, NVD)
+and K2 Think reasoning in the Oversight Officer.
 
-Planted scenario:
-  - ALERT-001: Triage says "Low" but Threat Hunter found APT29 association.
-    The Oversight Officer should flag this conflict and override to Critical.
-  - ALERT-002: Obvious false positive (Google DNS 8.8.8.8). Should be marked clean.
-  - ALERT-003: Suspicious malware download URL. Should be flagged as a threat.
+Prints a per-alert summary table at the end.
 
 Usage (run from project root):
     python3 -m graph.run
@@ -65,147 +62,14 @@ MOCK_ALERTS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Pre-populated mock results from Triage and Threat Hunter
-# (simulates what these agents would have produced)
-# ---------------------------------------------------------------------------
-
-MOCK_TRIAGE_RESULTS = [
-    {
-        "alert_id": "ALERT-001",
-        "severity": "Low",  # <<< DELIBERATE MISCLASSIFICATION
-        "is_false_positive": False,
-        "escalate_to_forensics": False,
-        "classification": "Routine Outbound Traffic",
-        "triage_notes": (
-            "Outbound HTTPS connections to an external IP. "
-            "No immediate indicators of compromise. Classified as low priority."
-        ),
-    },
-    {
-        "alert_id": "ALERT-002",
-        "severity": "Noise",
-        "is_false_positive": True,
-        "escalate_to_forensics": False,
-        "classification": "False Positive — Google DNS",
-        "triage_notes": (
-            "8.8.8.8 is Google Public DNS. High query volume is consistent "
-            "with a misconfigured resolver, not malicious activity."
-        ),
-    },
-    {
-        "alert_id": "ALERT-003",
-        "severity": "High",
-        "is_false_positive": False,
-        "escalate_to_forensics": True,
-        "classification": "Malware Download Attempt",
-        "triage_notes": (
-            "Attempted download of executable from known malicious domain. "
-            "Blocked by proxy but DNS resolution succeeded — host may be compromised."
-        ),
-    },
-]
-
-MOCK_ENRICHMENT_RESULTS = [
-    {
-        "alert_id": "ALERT-001",
-        "iocs": {
-            "ips": ["45.33.32.156"],
-            "domains": ["cozy-update-service.ru"],
-            "hashes": [],
-        },
-        "mitre_techniques": [
-            {
-                "technique_id": "T1071.001",
-                "technique_name": "Application Layer Protocol: Web Protocols",
-                "tactic": "Command and Control",
-            },
-            {
-                "technique_id": "T1573",
-                "technique_name": "Encrypted Channel",
-                "tactic": "Command and Control",
-            },
-        ],
-        "threat_actor": "APT29 (Cozy Bear)",  # <<< CONFLICTS WITH LOW TRIAGE
-        "threat_actor_confidence": "High",
-        "hunter_notes": (
-            "IP 45.33.32.156 is listed in AlienVault OTX pulse 'APT29 C2 Infrastructure 2024'. "
-            "Beaconing pattern (12-min interval) matches known APT29 WellMess implant behaviour. "
-            "Domain cozy-update-service.ru registered 3 days ago — typical APT29 fast-flux pattern."
-        ),
-    },
-    {
-        "alert_id": "ALERT-002",
-        "iocs": {
-            "ips": ["8.8.8.8"],
-            "domains": [],
-            "hashes": [],
-        },
-        "mitre_techniques": [],
-        "threat_actor": "Unknown",
-        "threat_actor_confidence": "Low",
-        "hunter_notes": (
-            "8.8.8.8 is Google Public DNS. No threat intelligence hits. "
-            "High query volume is benign — likely misconfigured application."
-        ),
-    },
-    {
-        "alert_id": "ALERT-003",
-        "iocs": {
-            "ips": ["10.0.0.88"],
-            "domains": ["malware-download.xyz"],
-            "hashes": [
-                "a1b2c3d4e5f67890abcdef1234567890abcdef1234567890abcdef1234567890"
-            ],
-        },
-        "mitre_techniques": [
-            {
-                "technique_id": "T1105",
-                "technique_name": "Ingress Tool Transfer",
-                "tactic": "Command and Control",
-            },
-        ],
-        "threat_actor": "Unknown",
-        "threat_actor_confidence": "Low",
-        "hunter_notes": (
-            "Domain malware-download.xyz registered 1 day ago, hosted on bulletproof hosting. "
-            "Hash not found in VirusTotal but domain is flagged in URLhaus."
-        ),
-    },
-]
-
-MOCK_FORENSICS_RESULTS = [
-    {
-        "alert_id": "ALERT-003",
-        "kill_chain": [
-            {"phase": "Initial Access", "description": "User clicked phishing link in email."},
-            {"phase": "Execution", "description": "Browser attempted download of payload.exe."},
-            {"phase": "Defence Evasion", "description": "Download blocked by proxy; DNS resolution succeeded."},
-        ],
-        "affected_systems": ["WS-DEV-017"],
-        "data_at_risk": "None identified — download was blocked.",
-        "blast_radius": "Contained",
-        "containment_actions": [
-            "Block domain malware-download.xyz at DNS and proxy level",
-            "Scan WS-DEV-017 with EDR full scan",
-            "Review email logs for phishing campaign targeting other users",
-        ],
-        "forensics_notes": (
-            "Attack was blocked at the proxy layer. No payload executed. "
-            "However, successful DNS resolution suggests the host attempted "
-            "the connection. Recommend full EDR scan as precaution."
-        ),
-    },
-]
-
-# ---------------------------------------------------------------------------
-# Initial state — pre-populated with mock agent results
+# Initial state — empty results, real APIs populate everything
 # ---------------------------------------------------------------------------
 
 initial_state: SOCState = {
     "alerts": MOCK_ALERTS,
-    "triage_results": MOCK_TRIAGE_RESULTS,
-    "enrichment_results": MOCK_ENRICHMENT_RESULTS,
-    "forensics_results": MOCK_FORENSICS_RESULTS,
+    "triage_results": [],
+    "enrichment_results": [],
+    "forensics_results": [],
     "oversight_verdict": {},
     "confidence": 0.0,
     "briefing": "",
@@ -214,21 +78,102 @@ initial_state: SOCState = {
 }
 
 # ---------------------------------------------------------------------------
+# Summary table printer
+# ---------------------------------------------------------------------------
+
+def print_summary_table(state: dict) -> None:
+    """Print a clean per-alert summary table."""
+    alerts = state.get("alerts", [])
+    triage = state.get("triage_results", [])
+    enrichment = state.get("enrichment_results", [])
+    forensics = state.get("forensics_results", [])
+    verdict = state.get("oversight_verdict", {})
+
+    # Index results by alert_id (take the last entry for each to handle dupes)
+    triage_by_id = {}
+    for r in triage:
+        triage_by_id[r.get("alert_id")] = r
+    enrich_by_id = {}
+    for r in enrichment:
+        enrich_by_id[r.get("alert_id")] = r
+    forensics_by_id = {}
+    for r in forensics:
+        forensics_by_id[r.get("alert_id")] = r
+
+    # Header
+    sep = "-" * 120
+    print(sep)
+    print(f"{'Alert ID':<12} {'Source IP':<18} {'AbuseIPDB':>10} {'OTX Pulses':>11} "
+          f"{'VT Malicious':>13} {'Triage':>10} {'Threat Actor':<25} {'CVEs':>5}")
+    print(sep)
+
+    for alert in alerts:
+        aid = alert["id"]
+        ip = alert.get("source_ip", "")
+
+        # Triage data
+        t = triage_by_id.get(aid, {})
+        severity = t.get("severity", "N/A")
+        abuse_data = t.get("api_data", {}).get("abuseipdb", {})
+        abuse_score = abuse_data.get("abuse_confidence_score", "N/A")
+
+        # Enrichment data
+        e = enrich_by_id.get(aid, {})
+        otx_data = e.get("api_data", {}).get("otx_ip", {})
+        otx_pulses = otx_data.get("pulse_count", "N/A")
+        vt_data = e.get("api_data", {}).get("virustotal_ip", {})
+        vt_malicious = vt_data.get("malicious", "N/A")
+        threat_actor = e.get("threat_actor", "N/A")
+
+        # Forensics data
+        f = forensics_by_id.get(aid, {})
+        cve_count = len(f.get("related_cves", []))
+
+        print(f"{aid:<12} {ip:<18} {str(abuse_score):>10} {str(otx_pulses):>11} "
+              f"{str(vt_malicious):>13} {severity:>10} {threat_actor:<25} {cve_count:>5}")
+
+    print(sep)
+
+    # Oversight summary
+    print(f"\nOversight Verdict : {verdict.get('verdict', 'N/A')}")
+    print(f"Confidence Score  : {state.get('confidence', 0):.1f}/100")
+    print(f"Severity Override : {verdict.get('severity_override', 'None')}")
+    conflicts = verdict.get("conflicts", [])
+    print(f"Conflicts Flagged : {len(conflicts)}")
+    for c in conflicts:
+        if isinstance(c, dict):
+            print(f"  [{c.get('alert_id', '?')}] {c.get('conflict_type', '')}: {c.get('description', '')}")
+        else:
+            print(f"  {c}")
+
+    apt_indicators = verdict.get("apt_indicators", [])
+    if apt_indicators:
+        print(f"APT Indicators    : {', '.join(str(a) for a in apt_indicators)}")
+
+    print(f"\nAssessment: {verdict.get('reasoning_summary', 'N/A')}")
+
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("  SOC SENTINEL — Starting agent graph")
-    print(f"  Processing {len(MOCK_ALERTS)} mock alert(s)")
-    print()
-    print("  PLANTED CONFLICT:")
-    print("    ALERT-001: Triage=Low, Threat Hunter=APT29 (High confidence)")
-    print("    Oversight Officer should flag this and override to Critical.")
+    print("  SOC SENTINEL — Full Pipeline Run")
+    print(f"  Processing {len(MOCK_ALERTS)} alert(s)")
+    print("  APIs: AbuseIPDB, GreyNoise, OTX, VirusTotal, NVD")
+    print("  LLM:  K2 Think V2 (Oversight Officer)")
     print("=" * 60)
     print()
 
     final_state = app.invoke(initial_state)
+
+    print()
+    print("=" * 60)
+    print("  PIPELINE SUMMARY")
+    print("=" * 60)
+    print()
+    print_summary_table(final_state)
 
     print()
     print("=" * 60)
@@ -238,26 +183,6 @@ if __name__ == "__main__":
 
     print()
     print("=" * 60)
-    print("  OVERSIGHT VERDICT (raw)")
+    print("  OVERSIGHT VERDICT (raw JSON)")
     print("=" * 60)
     print(json.dumps(final_state["oversight_verdict"], indent=2))
-
-    # Check if the planted conflict was caught
-    verdict = final_state.get("oversight_verdict", {})
-    conflicts = verdict.get("conflicts", [])
-    print()
-    print("=" * 60)
-    print("  CONFLICT DETECTION CHECK")
-    print("=" * 60)
-    if conflicts:
-        print(f"  Conflicts found: {len(conflicts)}")
-        for c in conflicts:
-            print(f"    - {c}")
-    else:
-        print("  WARNING: No conflicts detected. Oversight Officer missed the APT29 misclassification!")
-
-    verification = final_state.get("verification_alerts", [])
-    if verification:
-        print(f"\n  Verification alerts: {len(verification)}")
-        for v in verification:
-            print(f"    - {v}")
