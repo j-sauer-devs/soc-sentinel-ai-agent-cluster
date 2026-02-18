@@ -1,16 +1,33 @@
 """
-Stub node functions for SOC Sentinel agent graph.
+Node functions for SOC Sentinel agent graph.
 
 Each function:
   - Takes state: SOCState
   - Returns a partial state dict (LangGraph merges it into the full state)
   - Prints what it's doing so activity is visible during runs
 
-Placeholder logic only — real K2 Think LLM calls and security API
-integrations are wired in the next step.
+Oversight Officer uses live K2 Think calls. Other nodes are still stubs
+— real LLM calls and security API integrations coming next.
 """
 
+import json
+import os
+
+from openai import OpenAI
+
+from graph.prompts import OVERSIGHT_PROMPT
 from graph.state import SOCState
+from graph.utils import extract_reasoning
+
+# ---------------------------------------------------------------------------
+# K2 Think client — initialised once at module level
+# ---------------------------------------------------------------------------
+
+k2_client = OpenAI(
+    api_key=os.getenv("K2_API_KEY"),
+    base_url=os.getenv("K2_BASE_URL", "https://api.k2think.ai/v1"),
+)
+K2_MODEL = os.getenv("K2_MODEL", "MBZUAI-IFM/K2-Think-v2")
 
 
 # ---------------------------------------------------------------------------
@@ -130,24 +147,70 @@ def oversight_node(state: SOCState) -> dict:
         f"{len(enrichment)} enrichment, {len(forensics)} forensics result(s)..."
     )
 
-    # Stub: approve everything with high confidence
-    verdict = {
-        "verdict": "APPROVED",
-        "confidence": 85.0,
-        "conflicts": [],
-        "severity_overrides": [],
-        "verification_alerts": [],
-        "reasoning_summary": (
-            "Placeholder — all findings consistent. "
-            "Real cross-verification logic goes here."
-        ),
-    }
+    # Build the user message with all available findings
+    user_message = (
+        "Cross-verify the following agent findings and produce your verdict.\n\n"
+        f"=== TRIAGE RESULTS ===\n{json.dumps(triage, indent=2)}\n\n"
+        f"=== THREAT HUNTER ENRICHMENT ===\n{json.dumps(enrichment, indent=2)}\n\n"
+        f"=== FORENSICS RESULTS ===\n{json.dumps(forensics, indent=2)}\n\n"
+        "Analyse all findings for conflicts, severity mismatches, and hallucinated "
+        "indicators. Output your verdict as a single JSON object."
+    )
 
-    print(f"[Oversight Officer] Verdict: {verdict['verdict']} (confidence: {verdict['confidence']})")
+    print("[Oversight Officer] Calling K2 Think...")
+    response = k2_client.chat.completions.create(
+        model=K2_MODEL,
+        messages=[
+            {"role": "system", "content": OVERSIGHT_PROMPT},
+            {"role": "user", "content": user_message},
+        ],
+        max_tokens=2000,
+    )
+
+    raw_content = response.choices[0].message.content
+    reasoning, answer = extract_reasoning(raw_content)
+
+    print(f"[Oversight Officer] Reasoning block: {len(reasoning)} chars")
+
+    # Parse JSON from the answer — strip markdown fences if present
+    clean_answer = answer.strip()
+    if clean_answer.startswith("```"):
+        # Remove ```json ... ``` wrapper
+        lines = clean_answer.split("\n")
+        lines = [l for l in lines if not l.strip().startswith("```")]
+        clean_answer = "\n".join(lines).strip()
+
+    try:
+        parsed = json.loads(clean_answer)
+    except json.JSONDecodeError as e:
+        print(f"[Oversight Officer] JSON parse error: {e}")
+        print(f"[Oversight Officer] Raw answer:\n{answer[:500]}")
+        parsed = {
+            "verdict": "NEEDS_REVIEW",
+            "confidence": 50,
+            "conflicts": [f"JSON parse error in Oversight output: {e}"],
+            "severity_override": None,
+            "reasoning_summary": "Oversight Officer returned non-JSON output. Manual review required.",
+            "apt_indicators": [],
+        }
+
+    confidence = float(parsed.get("confidence", 50))
+    conflicts = parsed.get("conflicts", [])
+
+    print(f"[Oversight Officer] Verdict: {parsed.get('verdict', 'N/A')} (confidence: {confidence})")
+    if conflicts:
+        print(f"[Oversight Officer] Conflicts flagged: {len(conflicts)}")
+        for c in conflicts:
+            print(f"  - {c}")
+
     return {
-        "oversight_verdict": verdict,
-        "confidence": verdict["confidence"],
-        "verification_alerts": verdict["verification_alerts"],
+        "oversight_verdict": parsed,
+        "confidence": confidence,
+        "verification_alerts": [
+            {"alert_id": c.get("alert_id", "unknown"), "reason": str(c)}
+            if isinstance(c, dict) else {"alert_id": "unknown", "reason": str(c)}
+            for c in conflicts
+        ],
     }
 
 
