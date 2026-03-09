@@ -5,9 +5,12 @@ Checks IP reputation via the AbuseIPDB v2 API.
 Docs: https://docs.abuseipdb.com/
 """
 
+import logging
 import os
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 _BASE = "https://api.abuseipdb.com/api/v2/check"
 
@@ -23,10 +26,12 @@ def check_ip(ip: str, api_key: str | None = None, cache: dict | None = None) -> 
     if cache is None:
         cache = {}
     if ip in cache:
+        logger.debug("AbuseIPDB cache hit for %s", ip)
         return cache[ip]
 
     key = api_key or os.getenv("ABUSEIPDB_KEY")
     if not key:
+        logger.warning("ABUSEIPDB_KEY not set — returning stub for %s", ip)
         return {"ip": ip, "abuse_confidence_score": -1, "error": "ABUSEIPDB_KEY not set"}
 
     try:
@@ -48,7 +53,9 @@ def check_ip(ip: str, api_key: str | None = None, cache: dict | None = None) -> 
             "is_public": data.get("isPublic", True),
             "usage_type": data.get("usageType", ""),
         }
+        logger.info("AbuseIPDB: %s -> score=%d, reports=%d", ip, result["abuse_confidence_score"], result["total_reports"])
     except Exception as e:
+        logger.error("AbuseIPDB request failed for %s: %s", ip, e)
         result = {"ip": ip, "abuse_confidence_score": -1, "error": str(e)}
 
     cache[ip] = result

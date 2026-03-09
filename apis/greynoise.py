@@ -5,9 +5,12 @@ Queries GreyNoise Community API for IP classification.
 Docs: https://docs.greynoise.io/reference/get_v3-community-ip
 """
 
+import logging
 import os
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 _BASE = "https://api.greynoise.io/v3/community"
 
@@ -23,10 +26,12 @@ def check_ip(ip: str, api_key: str | None = None, cache: dict | None = None) -> 
     if cache is None:
         cache = {}
     if ip in cache:
+        logger.debug("GreyNoise cache hit for %s", ip)
         return cache[ip]
 
     key = api_key or os.getenv("GREYNOISE_KEY")
     if not key:
+        logger.warning("GREYNOISE_KEY not set — returning stub for %s", ip)
         # Graceful stub when key is missing
         result = {
             "ip": ip,
@@ -57,7 +62,9 @@ def check_ip(ip: str, api_key: str | None = None, cache: dict | None = None) -> 
             "name": data.get("name", ""),
             "link": data.get("link", ""),
         }
+        logger.info("GreyNoise: %s -> classification=%s, noise=%s", ip, result["classification"], result["noise"])
     except Exception as e:
+        logger.error("GreyNoise request failed for %s: %s", ip, e)
         result = {
             "ip": ip,
             "classification": "unknown",
