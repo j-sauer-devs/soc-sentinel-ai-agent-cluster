@@ -5,9 +5,12 @@ Searches the National Vulnerability Database for CVEs by keyword.
 Docs: https://nvd.nist.gov/developers/vulnerabilities
 """
 
+import logging
 import os
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 _BASE = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 
@@ -27,6 +30,7 @@ def search_cves(
     if cache is None:
         cache = {}
     if keyword in cache:
+        logger.debug("NVD cache hit for keyword=%s", keyword)
         return cache[keyword]
 
     key = api_key or os.getenv("NVD_KEY")
@@ -60,7 +64,7 @@ def search_cves(
             if not desc and descriptions:
                 desc = descriptions[0].get("value", "")[:300]
 
-            # Extract CVSS score — try V3.1 → V3.0 → V2
+            # Extract CVSS score — try V3.1 -> V3.0 -> V2
             cvss_score = 0.0
             severity = "UNKNOWN"
             metrics = cve.get("metrics", {})
@@ -87,7 +91,9 @@ def search_cves(
                 "severity": severity,
             })
 
+        logger.info("NVD: keyword=%s -> %d CVEs found", keyword, len(results))
     except Exception as e:
+        logger.error("NVD request failed for keyword=%s: %s", keyword, e)
         results = [{"cve_id": "ERROR", "description": str(e), "cvss_score": 0.0, "severity": "UNKNOWN"}]
 
     cache[keyword] = results

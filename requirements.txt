@@ -1,0 +1,18 @@
+# SOC Sentinel AI Agent — Dependencies
+# Existing
+langgraph
+langchain-core
+langchain-openai
+openai
+requests
+python-dotenv
+
+# FastAPI server
+fastapi
+uvicorn[standard]
+websockets
+pydantic
+
+# Testing
+pytest
+httpx

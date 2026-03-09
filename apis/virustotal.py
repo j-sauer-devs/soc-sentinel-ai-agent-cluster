@@ -5,9 +5,12 @@ Queries VT v3 for IP address reports and domain reports.
 Docs: https://docs.virustotal.com/reference/overview
 """
 
+import logging
 import os
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 _BASE = "https://www.virustotal.com/api/v3"
 
@@ -23,10 +26,12 @@ def check_ip(ip: str, api_key: str | None = None, cache: dict | None = None) -> 
         cache = {}
     cache_key = f"ip:{ip}"
     if cache_key in cache:
+        logger.debug("VirusTotal cache hit for ip:%s", ip)
         return cache[cache_key]
 
     key = api_key or os.getenv("VIRUSTOTAL_KEY")
     if not key:
+        logger.warning("VIRUSTOTAL_KEY not set — returning stub for ip %s", ip)
         return {"ip": ip, "malicious": -1, "error": "VIRUSTOTAL_KEY not set"}
 
     try:
@@ -49,7 +54,9 @@ def check_ip(ip: str, api_key: str | None = None, cache: dict | None = None) -> 
             "as_owner": attrs.get("as_owner", ""),
             "country": attrs.get("country", ""),
         }
+        logger.info("VirusTotal IP: %s -> malicious=%d", ip, result["malicious"])
     except Exception as e:
+        logger.error("VirusTotal IP request failed for %s: %s", ip, e)
         result = {"ip": ip, "malicious": -1, "error": str(e)}
 
     cache[cache_key] = result
@@ -62,10 +69,12 @@ def check_domain(domain: str, api_key: str | None = None, cache: dict | None = N
         cache = {}
     cache_key = f"domain:{domain}"
     if cache_key in cache:
+        logger.debug("VirusTotal cache hit for domain:%s", domain)
         return cache[cache_key]
 
     key = api_key or os.getenv("VIRUSTOTAL_KEY")
     if not key:
+        logger.warning("VIRUSTOTAL_KEY not set — returning stub for domain %s", domain)
         return {"domain": domain, "malicious": -1, "error": "VIRUSTOTAL_KEY not set"}
 
     try:
@@ -87,7 +96,9 @@ def check_domain(domain: str, api_key: str | None = None, cache: dict | None = N
             "reputation": attrs.get("reputation", 0),
             "registrar": attrs.get("registrar", ""),
         }
+        logger.info("VirusTotal domain: %s -> malicious=%d", domain, result["malicious"])
     except Exception as e:
+        logger.error("VirusTotal domain request failed for %s: %s", domain, e)
         result = {"domain": domain, "malicious": -1, "error": str(e)}
 
     cache[cache_key] = result

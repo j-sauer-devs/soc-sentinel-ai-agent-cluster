@@ -5,9 +5,12 @@ Queries OTX for pulse (threat intelligence) data on IPs and domains.
 Docs: https://otx.alienvault.com/api
 """
 
+import logging
 import os
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 _BASE = "https://otx.alienvault.com/api/v1"
 
@@ -23,10 +26,12 @@ def get_ip_pulses(ip: str, api_key: str | None = None, cache: dict | None = None
         cache = {}
     cache_key = f"ip:{ip}"
     if cache_key in cache:
+        logger.debug("OTX cache hit for ip:%s", ip)
         return cache[cache_key]
 
     key = api_key or os.getenv("OTX_KEY")
     if not key:
+        logger.warning("OTX_KEY not set — returning stub for ip %s", ip)
         return {"ip": ip, "pulse_count": -1, "error": "OTX_KEY not set"}
 
     try:
@@ -53,7 +58,9 @@ def get_ip_pulses(ip: str, api_key: str | None = None, cache: dict | None = None
             "reputation": data.get("reputation", 0),
             "country": data.get("country_name", ""),
         }
+        logger.info("OTX IP: %s -> %d pulses", ip, result["pulse_count"])
     except Exception as e:
+        logger.error("OTX IP request failed for %s: %s", ip, e)
         result = {"ip": ip, "pulse_count": -1, "error": str(e)}
 
     cache[cache_key] = result
@@ -66,10 +73,12 @@ def get_domain_pulses(domain: str, api_key: str | None = None, cache: dict | Non
         cache = {}
     cache_key = f"domain:{domain}"
     if cache_key in cache:
+        logger.debug("OTX cache hit for domain:%s", domain)
         return cache[cache_key]
 
     key = api_key or os.getenv("OTX_KEY")
     if not key:
+        logger.warning("OTX_KEY not set — returning stub for domain %s", domain)
         return {"domain": domain, "pulse_count": -1, "error": "OTX_KEY not set"}
 
     try:
@@ -94,7 +103,9 @@ def get_domain_pulses(domain: str, api_key: str | None = None, cache: dict | Non
                 for p in pulses[:5]
             ],
         }
+        logger.info("OTX domain: %s -> %d pulses", domain, result["pulse_count"])
     except Exception as e:
+        logger.error("OTX domain request failed for %s: %s", domain, e)
         result = {"domain": domain, "pulse_count": -1, "error": str(e)}
 
     cache[cache_key] = result

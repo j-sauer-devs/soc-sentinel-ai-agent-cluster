@@ -33,7 +33,7 @@ from graph.utils import extract_reasoning
 # ---------------------------------------------------------------------------
 
 k2_client = OpenAI(
-    api_key=os.getenv("K2_API_KEY"),
+    api_key=os.getenv("K2_API_KEY", ""),
     base_url=os.getenv("K2_BASE_URL", "https://api.k2think.ai/v1"),
 )
 K2_MODEL = os.getenv("K2_MODEL", "MBZUAI-IFM/K2-Think-v2")
